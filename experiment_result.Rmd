@@ -13,6 +13,7 @@ library(pastecs)
 library(car)
 library(compute.es)
 library(WRS2)
+library(gmodels)
 
 #runQuery <- genQueryRunnerFunc(qr_datasource = c("atlantis"))
 
@@ -274,6 +275,48 @@ pairwise.t.test(nopromo.tripdata_by_user_and_group$trips_by_user,
                 nopromo.tripdata_by_user_and_group$treatment,
                 p.adjust.method = "bonferroni")
 ```
+Exp 1 chi square (frequencies of how many users take at least 1 nonpromo trips)
+
+```{r}
+nopromo.tripdata_by_user_and_group 
+
+exp1.chisqr.raw <- nopromo.tripdata_by_user_and_group %>%
+  dplyr::mutate(took_nopromo_trip = if_else(trips_by_user >= 1, 1, 0),
+         no_nopromo_trip = if_else(trips_by_user >= 1, 0, 1)) 
+
+exp1.chisqr.raw
+
+exp1.chisqr.contingency_table <- exp1.chisqr.raw %>%
+  group_by(treatment) %>%
+  summarise(took_nopromo_trip = sum(took_nopromo_trip)
+            , no_nopromo_trip = sum(no_nopromo_trip)) #%>%
+  #mutate(ratio = took_nopromo_trip / (no_nopromo_trip + took_nopromo_trip)) #this ratio is the same as in mentana.
+
+exp1.chisqr.contingency_table
+
+t <- exp1.chisqr.contingency_table %>%
+  dplyr::select(-treatment) %>%
+  as.data.frame()
+
+dimnames(t) <- list(treatment = c("0 x IDR 0", "1 x IDR 10k", "3 x IDR 10k", "5 x IDR 10k", "8 x IDR 10k"), 
+                    nopromo_trip = c("has_nopromo_trip", "no_nopromo_trip"))
+
+t
+
+xsq <- chisq.test(t)
+xsq
+xsq$p.value
+xsq$observed
+xsq$expected
+xsq$stdres #the p.value is like omnibus test in ANOVA. To look at the individual relationship, need to look at this standardised residuals. If bigger than +- 1.96, then it's significant at 0.05 level. 
+
+CrossTable(exp1.chisqr.raw$treatment,
+           exp1.chisqr.raw$took_nopromo_trip, 
+           fisher = F, chisq = T, expected = T, prop.c = F, prop.t = F, prop.chisq = F, sresid = T, format = "SPSS")
+
+
+```
+
 
 ## 2nd experiment: changing the dollar amount of the promo
 
@@ -414,6 +457,46 @@ oneway.test(trips_by_user ~ treatment, data = exp2.nopromo.tripdata_by_user_and_
 pairwise.t.test(exp2.nopromo.tripdata_by_user_and_group$trips_by_user,
                 exp2.nopromo.tripdata_by_user_and_group$treatment,
                 p.adjust.method = "bonferroni")
+```
+
+Exp2's chi-squared
+```{r}
+exp2.nopromo.tripdata_by_user_and_group 
+
+exp2.chisqr.raw <- exp2.nopromo.tripdata_by_user_and_group %>%
+  dplyr::mutate(took_nopromo_trip = if_else(trips_by_user >= 1, 1, 0),
+         no_nopromo_trip = if_else(trips_by_user >= 1, 0, 1)) 
+
+exp2.chisqr.raw
+
+exp2.chisqr.contingency_table <- exp2.chisqr.raw %>%
+  group_by(treatment) %>%
+  summarise(took_nopromo_trip = sum(took_nopromo_trip)
+            , no_nopromo_trip = sum(no_nopromo_trip)) #%>%
+  #mutate(ratio = took_nopromo_trip / (no_nopromo_trip + took_nopromo_trip)) #this ratio is the same as in mentana.
+
+exp2.chisqr.contingency_table
+
+t2 <- exp2.chisqr.contingency_table %>%
+  dplyr::select(-treatment) %>%
+  as.data.frame()
+
+dimnames(t2) <- list(treatment = c("0 x IDR 0", "1 x IDR 5k", "1 x IDR 10k", "1 x IDR 20k", "1 x IDR 30k", "1 x IDR 50k"), 
+                    nopromo_trip = c("has_nopromo_trip", "no_nopromo_trip"))
+
+t2
+
+xsq2 <- chisq.test(t2)
+xsq2
+xsq2$p.value
+xsq2$observed
+xsq2$expected
+xsq2$stdres #the p.value is like omnibus test in ANOVA. To look at the individual relationship, need to look at this standardised residuals. If bigger than +- 1.96, then it's significant at 0.05 level. 
+
+CrossTable(exp2.chisqr.raw$treatment,
+           exp2.chisqr.raw$took_nopromo_trip, 
+           fisher = F, chisq = T, expected = T, prop.c = F, prop.t = F, prop.chisq = F, sresid = T, format = "SPSS")
+
 ```
 
 
