@@ -1,0 +1,434 @@
+---
+title: "GxyGxy NUP promo experiment"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+library(ubeR)
+library(tidyverse)
+library(multcomp)
+library(lubridate)
+library(stringr)
+library(pastecs)
+library(car)
+library(compute.es)
+library(WRS2)
+
+#runQuery <- genQueryRunnerFunc(qr_datasource = c("atlantis"))
+
+tripdata <- read_csv("trip_info_warehouse_cleaned.csv")
+
+tripdata <- tripdata[(!duplicated(tripdata$trip_uuid) | is.na(tripdata$trip_uuid)),]
+
+experiment_groups <- tribble(
+  ~experiment, ~tag                          , ~promo_amount, ~num_of_rides,
+  12         , "indo_sul_rider_promo_control", 0            , 0,
+  12          , "indo_sul_rider_promo_t1"     , 10000        , 1,
+  1          , "indo_sul_rider_promo_t2"     , 10000        , 3,
+  1          , "indo_sul_rider_promo_t3"     , 10000        , 5,
+  1          , "indo_sul_rider_promo_t4"     , 10000        , 8,
+  2          , "indo_sul_rider_promo_t5"     , 5000         , 1,
+  2          , "indo_sul_rider_promo_t6"     , 20000        , 1,
+  2          , "indo_sul_rider_promo_t7"     , 30000        , 1,
+  2          , "indo_sul_rider_promo_t8"     , 50000        , 1
+) %>%
+  mutate(experiment = as.factor(experiment),
+         tag = as.factor(tag))
+
+tripdata <- tripdata %>%
+  inner_join(experiment_groups, by = c("treatment_group_key" = "tag")) %>%
+  dplyr::mutate(treatment = factor(dplyr::recode(treatment_group_key,
+                                      "indo_sul_rider_promo_control" = "0 x IDR 0",
+                                      "indo_sul_rider_promo_t1" = "1 x IDR 10k",
+                                      "indo_sul_rider_promo_t2" = "3 x IDR 10k",
+                                      "indo_sul_rider_promo_t3" = "5 x IDR 10k",
+                                      "indo_sul_rider_promo_t4" = "8 x IDR 10k",
+                                      "indo_sul_rider_promo_t5" = "1 x IDR 5k",
+                                      "indo_sul_rider_promo_t6" = "1 x IDR 20k",
+                                      "indo_sul_rider_promo_t7" = "1 x IDR 30k",
+                                      "indo_sul_rider_promo_t8" = "1 x IDR 50k"),
+                                   levels = c("0 x IDR 0"
+                                              , "1 x IDR 5k"
+                                              , "1 x IDR 10k"
+                                              , "3 x IDR 10k"
+                                              , "5 x IDR 10k"
+                                              , "8 x IDR 10k"
+                                              , "1 x IDR 20k"
+                                              , "1 x IDR 30k"
+                                              , "1 x IDR 50k")))
+
+#tripdata <- read_csv("trip_info_warehouse_cleaned.csv")
+
+mentana <- read_csv("mentana_result_1.csv")
+
+```
+
+```{r evaluate = FALSE}
+runQuery <- genQueryRunnerFunc()
+
+raw_warehouse <- runQuery("raw_data_pull_per_user_warehouse.sql") 
+
+for(column in colnames(raw_warehouse)) {
+  raw_warehouse[[column]][str_detect(raw_warehouse[[column]], "\\\\N")] <- NA
+}
+```
+
+
+```{r evaluate=FALSE}
+
+tripdata2 <- read_csv("trip_info_warehouse.csv")
+
+for(column in colnames(tripdata2)) {
+  tripdata2[[column]][str_detect(tripdata2[[column]], "\\\\N")] <- NA
+}
+
+write_csv(tripdata2, "trip_info_warehouse_cleaned.csv")
+
+```
+
+```{r}
+tripdata %>%
+  filter(treatment_group_key %in% c('indo_sul_rider_promo_t2' 
+  , 'indo_sul_rider_promo_t1' 
+  , 'indo_sul_rider_promo_control' 
+  , 'indo_sul_rider_promo_t4' 
+  , 'indo_sul_rider_promo_t3')) %>%
+  group_by(user_uuid) %>%
+  summarise(total_dup = n_distinct(user_uuid))
+```
+
+
+```{r}
+
+tripdata %>%
+  arrange(desc(request_timestamp_utc)) %>%
+  select(request_timestamp_utc, everything())
+
+tripdata %>%
+  arrange(request_timestamp_utc) %>%
+  select(request_timestamp_utc, everything())
+
+```
+
+##First experiment: changing number of rides
+
+Levene's test indicated that the variances were not equal (p > 0.05), therefore we must use the robust version of ANOVA.
+
+What's the average number of trips taken by the riders in each group? includes users who do not take trips. includes both promo and non promo trips
+```{r}
+tripdata_by_user_and_group <- tripdata %>%
+  filter(treatment_group_key %in% c('indo_sul_rider_promo_t2' 
+  , 'indo_sul_rider_promo_t1' 
+  , 'indo_sul_rider_promo_control' 
+  , 'indo_sul_rider_promo_t4' 
+  , 'indo_sul_rider_promo_t3')) %>%
+  mutate(trip = if_else(!is.na(trip_uuid),1,0)) %>%
+  dplyr::select(trip_uuid, trip, everything()) %>%
+  group_by(user_uuid, treatment_group_key, treatment) %>%
+  summarise(trips_by_user = sum(trip)) 
+
+#get table of descriptives for each group. stat.desc() comes from pastecs package
+by(tripdata_by_user_and_group$trips_by_user,
+   tripdata_by_user_and_group$treatment,
+   stat.desc)
+
+leveneTest(tripdata_by_user_and_group$trips_by_user,
+   tripdata_by_user_and_group$treatment,
+   center = median)
+
+#1 way anova (robust, does not require homoscedasticity, uses trimmed mean) 'treatment' column has to be converted to character otherwise will throw an error if kept as factor.
+rob.anova.alltrips <- t1way(trips_by_user ~ as.character(treatment), data = tripdata_by_user_and_group)
+
+rob.anova.alltrips
+
+#post hoc test for t1way
+rob.posthoc.alltrips <- lincon(trips_by_user ~ as.character(treatment), data = tripdata_by_user_and_group)
+
+rob.posthoc.alltrips
+
+#robust 1 way anova using median.
+#med1way(trips_by_user ~ treatment, data = tripdata_by_user_and_group)
+
+tripdata_by_user_and_group
+
+tripdata_by_user_and_group %>%
+  ggplot() +
+  geom_freqpoly(aes(x = trips_by_user, y = ..density.., color = treatment), alpha = 0.3)
+
+tripdata_by_user_and_group %>%
+  ggplot(aes(x = treatment, y = trips_by_user)) +
+  stat_summary(fun.y = mean, geom = "point") +
+  stat_summary(fun.y = mean, geom = "line", aes(group = 1), color = "blue", linetype = "dashed") + #group = 1 to have the lines joining at the mean, not individual data points
+  stat_summary(fun.data = mean_cl_boot, geom = "errorbar", width = 0.2) +
+  labs(x = "Treatment", y = "Mean number of trips")
+  
+summarised_tripdata_by_group <- tripdata_by_user_and_group %>%
+  group_by(treatment_group_key, treatment) %>%
+  summarise(num_users = n_distinct(user_uuid),
+            average_trips_per_user_by_group = mean(trips_by_user),
+            sd = sd(trips_by_user))
+
+summarised_tripdata_by_group
+
+```
+
+
+
+
+How are the data distributed using boxplot? 
+
+```{r}
+tripdata_by_user_and_group %>%
+  #filter(trips_by_user > 0) %>%
+  ggplot() +
+  geom_boxplot(aes(x = treatment, y = trips_by_user)) +
+  coord_flip()
+
+tripdata_by_user_and_group %>%
+  mutate(log10_trips_by_user = log10(trips_by_user)) %>%
+  ggplot() +
+  geom_boxplot(aes(x = treatment, y = log10_trips_by_user)) +
+  coord_flip()
+
+
+```
+
+Are these differences significant? Run one way ANOVA twice for each experiment.
+```{r}
+mentana %>%
+  group_by(treatment_group_key) %>%
+  summarise(mean_trips = mean(metric_value))
+```
+
+same as previous but do not include promo trips (counting non promo trips only).
+Levene's test is highly significant, which means we have to use robust version of ANOVA. Unfortunately none of the available methods work (t1bt, Qanova) so I'll have to try with normal anova and state the limitation.
+```{r}
+
+nopromo.tripdata_by_user_and_group <- tripdata %>%
+  filter(treatment_group_key %in% c('indo_sul_rider_promo_t2' 
+  , 'indo_sul_rider_promo_t1' 
+  , 'indo_sul_rider_promo_control' 
+  , 'indo_sul_rider_promo_t4' 
+  , 'indo_sul_rider_promo_t3')) %>%
+  mutate(non_promo_trip = if_else((is.na(promotion_local) & !is.na(trip_uuid)), 1, 0)) %>%
+  group_by(user_uuid, treatment_group_key, treatment) %>%
+  summarise(trips_by_user = sum(non_promo_trip))
+
+nopromo.tripdata_by_user_and_group %>%
+  arrange(desc(trips_by_user))
+
+#get table of descriptives for each group. stat.desc() comes from pastecs package
+by(nopromo.tripdata_by_user_and_group$trips_by_user,
+   nopromo.tripdata_by_user_and_group$treatment,
+   stat.desc)
+
+leveneTest(nopromo.tripdata_by_user_and_group$trips_by_user,
+   nopromo.tripdata_by_user_and_group$treatment,
+   center = median)
+
+#1 way anova (robust, does not require homoscedasticity, uses trimmed mean). 'treatment' column has to be converted to character otherwise will throw an error if kept as factor.
+rob.anova.nopromotrips <- t1waybt(trips_by_user ~ as.character(treatment), data = nopromo.tripdata_by_user_and_group)
+
+rob.anova.nopromotrips
+
+#post hoc test for t1way
+rob.posthoc.nopromotrips <- mcppb20(trips_by_user ~ as.character(treatment), data = nopromo.tripdata_by_user_and_group)
+
+rob.posthoc.nopromotrips
+
+```
+
+Still on assessing the nonpromo trips (group means are the same as Mentana's result).
+
+```{r}
+######################
+
+nopromo.tripdata_by_user_and_group %>%
+  ggplot() +
+  geom_freqpoly(aes(x = trips_by_user, y = ..density.., color = treatment), alpha = 0.3)
+
+nopromo.tripdata_by_user_and_group %>%
+  ggplot(aes(x = treatment, y = trips_by_user)) +
+  stat_summary(fun.y = mean, geom = "point") +
+  stat_summary(fun.y = mean, geom = "line", aes(group = 1), color = "blue", linetype = "dashed") + #group = 1 to have the lines joining at the mean, not individual data points
+  stat_summary(fun.data = mean_cl_boot, geom = "errorbar", width = 0.2) +
+  labs(x = "Treatment", y = "Mean number of trips")
+
+nopromo.summarised_tripdata_by_group <- nopromo.tripdata_by_user_and_group %>%
+  group_by(treatment_group_key, treatment) %>%
+  summarise(num_users = n_distinct(user_uuid),
+            average_trips_per_user_by_group = mean(trips_by_user),
+            sd = sd(trips_by_user)) 
+
+nopromo.summarised_tripdata_by_group 
+
+#### ANOVA, non robust
+nonrob.nopromo.model <- aov(trips_by_user ~ treatment, data = nopromo.tripdata_by_user_and_group)
+summary(nonrob.nopromo.model)
+plot(nonrob.nopromo.model) #1st and 2nd plot are the most important: 1st plot is like Levene's test (to test homogeneity of variance) -- which ours failed terribly at. 2nd plot (QQ) should have the datapoints sitting on the diagonal line -- ours are not nearly near the diagonal line. we need to try something else. 
+
+##### ANOVA for failed Levene's test (applying Welch's F to the data). Use this F-ratio instead of the previous normal ANOVA
+oneway.test(trips_by_user ~ treatment, data = nopromo.tripdata_by_user_and_group)
+
+pairwise.t.test(nopromo.tripdata_by_user_and_group$trips_by_user,
+                nopromo.tripdata_by_user_and_group$treatment,
+                p.adjust.method = "bonferroni")
+```
+
+## 2nd experiment: changing the dollar amount of the promo
+
+```{r}
+exp2.tripdata_by_user_and_group <- tripdata %>%
+  filter(treatment_group_key %in% c('indo_sul_rider_promo_control' 
+  , 'indo_sul_rider_promo_t1' 
+  , 'indo_sul_rider_promo_t5' 
+  , 'indo_sul_rider_promo_t6' 
+  , 'indo_sul_rider_promo_t7'
+  , 'indo_sul_rider_promo_t8')) %>%
+  mutate(trip = if_else(!is.na(trip_uuid),1,0)) %>%
+  dplyr::select(trip_uuid, trip, everything()) %>%
+  group_by(user_uuid, treatment_group_key, treatment) %>%
+  summarise(trips_by_user = sum(trip)) 
+
+#get table of descriptives for each group. stat.desc() comes from pastecs package
+by(exp2.tripdata_by_user_and_group$trips_by_user,
+   exp2.tripdata_by_user_and_group$treatment,
+   stat.desc)
+
+leveneTest(exp2.tripdata_by_user_and_group$trips_by_user,
+   exp2.tripdata_by_user_and_group$treatment,
+   center = median)
+
+#1 way anova (robust, does not require homoscedasticity, uses trimmed mean). 'treatment' column has to be converted to character otherwise will throw an error if kept as factor.
+exp2.rob.anova.alltrips <- t1way(trips_by_user ~ as.character(treatment), data = exp2.tripdata_by_user_and_group)
+
+exp2.rob.anova.alltrips
+
+#post hoc test for t1way
+exp2.rob.posthoc.alltrips <- lincon(trips_by_user ~ as.character(treatment), data = exp2.tripdata_by_user_and_group)
+
+exp2.rob.posthoc.alltrips
+
+#robust 1 way anova using median.
+#med1way(trips_by_user ~ treatment, data = tripdata_by_user_and_group)
+
+exp2.tripdata_by_user_and_group
+
+exp2.tripdata_by_user_and_group %>%
+  ggplot() +
+  geom_freqpoly(aes(x = trips_by_user, y = ..density.., color = treatment), alpha = 0.3)
+
+exp2.tripdata_by_user_and_group %>%
+  ggplot(aes(x = treatment, y = trips_by_user)) +
+  stat_summary(fun.y = mean, geom = "point") +
+  stat_summary(fun.y = mean, geom = "line", aes(group = 1), color = "blue", linetype = "dashed") + #group = 1 to have the lines joining at the mean, not individual data points
+  stat_summary(fun.data = mean_cl_boot, geom = "errorbar", width = 0.2) +
+  labs(x = "Treatment", y = "Mean number of trips")
+  
+exp2.summarised_tripdata_by_group <- exp2.tripdata_by_user_and_group %>%
+  group_by(treatment_group_key, treatment) %>%
+  summarise(num_users = n_distinct(user_uuid),
+            average_trips_per_user_by_group = mean(trips_by_user),
+            sd = sd(trips_by_user))
+
+exp2.summarised_tripdata_by_group
+```
+
+Exp 2: nonpromo trips only
+
+```{r}
+
+exp2.nopromo.tripdata_by_user_and_group <- tripdata %>%
+  filter(treatment_group_key %in% c('indo_sul_rider_promo_control' 
+  , 'indo_sul_rider_promo_t1' 
+  , 'indo_sul_rider_promo_t5' 
+  , 'indo_sul_rider_promo_t6' 
+  , 'indo_sul_rider_promo_t7'
+  , 'indo_sul_rider_promo_t8')) %>%
+  mutate(non_promo_trip = if_else((is.na(promotion_local) & !is.na(trip_uuid)), 1, 0)) %>%
+  group_by(user_uuid, treatment_group_key, treatment) %>%
+  summarise(trips_by_user = sum(non_promo_trip))
+
+exp2.nopromo.tripdata_by_user_and_group %>%
+  arrange(desc(trips_by_user))
+
+#get table of descriptives for each group. stat.desc() comes from pastecs package
+by(exp2.nopromo.tripdata_by_user_and_group$trips_by_user,
+   exp2.nopromo.tripdata_by_user_and_group$treatment,
+   stat.desc)
+
+leveneTest(exp2.nopromo.tripdata_by_user_and_group$trips_by_user,
+   exp2.nopromo.tripdata_by_user_and_group$treatment,
+   center = median)
+
+#1 way anova (robust, does not require homoscedasticity, uses trimmed mean). 'treatment' column has to be converted to character otherwise will throw an error if kept as factor.
+exp2.rob.anova.nopromotrips <- t1waybt(trips_by_user ~ as.character(treatment), data = exp2.nopromo.tripdata_by_user_and_group)
+
+exp2.rob.anova.nopromotrips
+
+#post hoc test for t1way
+exp2.rob.posthoc.nopromotrips <- mcppb20(trips_by_user ~ as.character(treatment), data = exp2.nopromo.tripdata_by_user_and_group)
+
+exp2.rob.posthoc.nopromotrips
+```
+
+```{r}
+t1way(trips_by_user ~ as.character(treatment), data = exp2.nopromo.tripdata_by_user_and_group)
+
+lincon(trips_by_user ~ as.character(treatment), data = exp2.nopromo.tripdata_by_user_and_group)
+```
+
+
+Still on assessing the nonpromo trips (group means are the same as Mentana's result).
+
+```{r}
+######################
+
+exp2.nopromo.tripdata_by_user_and_group %>%
+  ggplot() +
+  geom_freqpoly(aes(x = trips_by_user, y = ..density.., color = treatment), alpha = 0.3)
+
+exp2.nopromo.tripdata_by_user_and_group %>%
+  ggplot(aes(x = treatment, y = trips_by_user)) +
+  stat_summary(fun.y = mean, geom = "point") +
+  stat_summary(fun.y = mean, geom = "line", aes(group = 1), color = "blue", linetype = "dashed") + #group = 1 to have the lines joining at the mean, not individual data points
+  stat_summary(fun.data = mean_cl_boot, geom = "errorbar", width = 0.2) +
+  labs(x = "Treatment", y = "Mean number of trips")
+
+exp2.nopromo.summarised_tripdata_by_group <- exp2.nopromo.tripdata_by_user_and_group %>%
+  group_by(treatment_group_key, treatment) %>%
+  summarise(num_users = n_distinct(user_uuid),
+            average_trips_per_user_by_group = mean(trips_by_user),
+            sd = sd(trips_by_user)) 
+
+exp2.nopromo.summarised_tripdata_by_group 
+
+#### ANOVA, non robust
+exp2.nonrob.nopromo.model <- aov(trips_by_user ~ treatment, data = nopromo.tripdata_by_user_and_group)
+summary(exp2.nonrob.nopromo.model)
+plot(exp2.nonrob.nopromo.model) #1st and 2nd plot are the most important: 1st plot is like Levene's test (to test homogeneity of variance) -- which ours failed terribly at. 2nd plot (QQ) should have the datapoints sitting on the diagonal line -- ours are not nearly near the diagonal line. we need to try something else. 
+
+##### ANOVA for failed Levene's test (applying Welch's F to the data). Use this F-ratio instead of the previous normal ANOVA
+oneway.test(trips_by_user ~ treatment, data = exp2.nopromo.tripdata_by_user_and_group)
+
+pairwise.t.test(exp2.nopromo.tripdata_by_user_and_group$trips_by_user,
+                exp2.nopromo.tripdata_by_user_and_group$treatment,
+                p.adjust.method = "bonferroni")
+```
+
+
+which promo codes were the most used?
+
+```{r}
+tripdata %>%
+  filter(!is.na(promotion_code),
+         str_detect(promotion_code, "NGUBER"),
+         str_length(promotion_code) < 9,
+         str_length(promotion_code) > 6) %>%
+  group_by(treatment_group_key, promotion_code, product) %>%
+  summarise(num_promo_trips = n()
+            , total_burn_usd = sum(amount_used / 13500)) %>%
+  mutate(burn_per_trip = total_burn_usd / num_promo_trips) %>%
+  arrange(desc(total_burn_usd)) 
+  
+```
