@@ -19,6 +19,7 @@ library(gmodels)
 
 tripdata <- read_csv("trip_info_warehouse_cleaned.csv")
 
+#remove duplicated trip_uuid rows
 tripdata <- tripdata[(!duplicated(tripdata$trip_uuid) | is.na(tripdata$trip_uuid)),]
 
 experiment_groups <- tribble(
@@ -72,6 +73,9 @@ raw_warehouse <- runQuery("raw_data_pull_per_user_warehouse.sql")
 for(column in colnames(raw_warehouse)) {
   raw_warehouse[[column]][str_detect(raw_warehouse[[column]], "\\\\N")] <- NA
 }
+
+write_csv(raw_warehouse, "trip_info_warehouse_cleaned.csv")
+
 ```
 
 
@@ -113,7 +117,7 @@ tripdata %>%
 
 ##First experiment: changing number of rides
 
-Levene's test indicated that the variances were not equal (p > 0.05), therefore we must use the robust version of ANOVA.
+Levene's test indicated that the variances were not equal (p < 0.05), therefore we must use the robust version of ANOVA.
 
 What's the average number of trips taken by the riders in each group? includes users who do not take trips. includes both promo and non promo trips
 ```{r}
@@ -253,7 +257,7 @@ nopromo.tripdata_by_user_and_group %>%
   stat_summary(fun.y = mean, geom = "point") +
   stat_summary(fun.y = mean, geom = "line", aes(group = 1), color = "blue", linetype = "dashed") + #group = 1 to have the lines joining at the mean, not individual data points
   stat_summary(fun.data = mean_cl_boot, geom = "errorbar", width = 0.2) +
-  labs(x = "Treatment", y = "Mean number of trips")
+  labs(x = "Treatment", y = "Mean number of nonpromo trips")
 
 nopromo.summarised_tripdata_by_group <- nopromo.tripdata_by_user_and_group %>%
   group_by(treatment_group_key, treatment) %>%
@@ -315,6 +319,24 @@ CrossTable(exp1.chisqr.raw$treatment,
            fisher = F, chisq = T, expected = T, prop.c = F, prop.t = F, prop.chisq = F, sresid = T, format = "SPSS")
 
 
+```
+
+```{r}
+exp1.summary.result <- exp1.chisqr.contingency_table %>%
+  mutate(pctg_riders_with_nonpromo_trips = took_nopromo_trip / (no_nopromo_trip + took_nopromo_trip) * 100) %>%
+  dplyr::select(1,4) %>%
+  inner_join(nopromo.summarised_tripdata_by_group, by = "treatment") %>%
+  dplyr::select(treatment_group_key, treatment, num_users, average_trips_per_user_by_group, pctg_riders_with_nonpromo_trips) %>%
+  rename(mean_nonpromo_trips_per_user = average_trips_per_user_by_group)
+
+exp1.summary.result
+
+exp1.summary.result %>%
+  ggplot() +
+  geom_bar(aes(x = treatment, y = pctg_riders_with_nonpromo_trips), stat = "identity") +
+  geom_text(aes(x = treatment, y = pctg_riders_with_nonpromo_trips, label = round(pctg_riders_with_nonpromo_trips,1), vjust = -0.6)) +
+  labs(x = "Treatment",
+       y = "Proportion of Riders with nonpromo trip (%)")
 ```
 
 
@@ -436,7 +458,7 @@ exp2.nopromo.tripdata_by_user_and_group %>%
   stat_summary(fun.y = mean, geom = "point") +
   stat_summary(fun.y = mean, geom = "line", aes(group = 1), color = "blue", linetype = "dashed") + #group = 1 to have the lines joining at the mean, not individual data points
   stat_summary(fun.data = mean_cl_boot, geom = "errorbar", width = 0.2) +
-  labs(x = "Treatment", y = "Mean number of trips")
+  labs(x = "Treatment", y = "Mean number of nonpromo trips")
 
 exp2.nopromo.summarised_tripdata_by_group <- exp2.nopromo.tripdata_by_user_and_group %>%
   group_by(treatment_group_key, treatment) %>%
@@ -499,6 +521,24 @@ CrossTable(exp2.chisqr.raw$treatment,
 
 ```
 
+```{r}
+exp2.summary.result <- exp2.chisqr.contingency_table %>%
+  mutate(pctg_riders_with_nonpromo_trips = took_nopromo_trip / (no_nopromo_trip + took_nopromo_trip) * 100) %>%
+  dplyr::select(1,4) %>%
+  inner_join(exp2.nopromo.summarised_tripdata_by_group, by = "treatment") %>%
+  dplyr::select(treatment_group_key, treatment, num_users, average_trips_per_user_by_group, pctg_riders_with_nonpromo_trips) %>%
+  rename(mean_nonpromo_trips_per_user = average_trips_per_user_by_group)
+
+exp2.summary.result
+
+exp2.summary.result %>%
+  ggplot() +
+  geom_bar(aes(x = treatment, y = pctg_riders_with_nonpromo_trips), stat = "identity") +
+  geom_text(aes(x = treatment, y = pctg_riders_with_nonpromo_trips, label = round(pctg_riders_with_nonpromo_trips,1), vjust = -0.6)) +
+  labs(x = "Treatment",
+       y = "Proportion of Riders with nonpromo trip (%)")
+
+```
 
 which promo codes were the most used?
 
